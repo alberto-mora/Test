@@ -21,9 +21,10 @@ filename = '/home/vant/Braun/Braun.csv'
 # canon.columns = ['Feature']
 # canon_aux = canon.copy()
 # canon_aux['Feature'] = canon_aux['Feature'].str.split('.').str[0]
-gtf = read_gtf("/home/vant/NMDetective/CDS_hg19_NMDetectiveB_Lindeboom_et_al.v2.gtf")
-gtf_all = read_gtf("/home/vant/NMDetective/hg19_NMDetectiveB_Lindeboom_et_al.v2.gtf")
-gtf_all = gtf_all.loc[(gtf_all['feature'] == 'exon') | (gtf_all['feature'] == 'CDS')]
+gtf = read_gtf("/home/vant/NMDetective/CDS_hg19_NMDetectiveB_Lindeboom_et_al.v2.gtf") #GTF que contiene las zonas CDS de los trasncritos
+gtf_all = read_gtf("/home/vant/NMDetective/hg19_NMDetectiveB_Lindeboom_et_al.v2.gtf") #GTF que contiene toda la información del NMDetectiveB
+gtf_all = gtf_all.loc[(gtf_all['feature'] == 'exon') | (gtf_all['feature'] == 'CDS')] #Ahora contiene zonas CDS y exones enteros de los trasncritos, para sacar la zona utr
+gtfA = read_gtf("/home/vant/NMDetective/CDS_hg19_NMDetectiveA_Lindeboom_et_al.v2.gtf")
 
 # Abrir las tablas necesarias, la del ENST y la de conónicos
 # kgid = pd.read_csv('/home/vant/NMDetective/kgAlias.txt', sep='\t', header=None)
@@ -96,35 +97,31 @@ def getPTCpositionFromFS(gtf, ID, VCF_init, refgen, consequence, ID_specific):
 		ID_aux = '_'.join([CHR,str(POS)])
 
 		if gtf.loc[(gtf['seqname'] == CHR) & (gtf['start'] <= POS) & (gtf['end'] >= POS)].empty == False:
-			feature = gtf['Feature'].loc[(gtf['seqname'] == CHR) & (gtf['start'] <= POS) & (gtf['end'] >= POS)].values[0]
+			feature = gtf['Feature'].loc[(gtf['seqname'] == CHR) & (gtf['start'] <= POS) & (gtf['end'] >= POS)].values[0] #Coges el primer tránscrito aunque en esa posición genómica haya varios tránscritos
 			exons = gtf.loc[gtf['exon_id'].str.contains(feature)]
 			strand = exons['strand'].values[0]
 			ucsc_id = exons['gene_id'].values[0]
 			exons['exon_number'] = exons['exon_number'].astype(int)
+			gtf_aux = gtf_all.loc[gtf_all['gene_id'] == ucsc_id]
+			gtf_aux['exon_number'] = gtf_aux['exon_number'].astype(int)
 			if strand == '+': #Para añadir zona UTR
-				if gtf_all['exon_number'].values[-1] == exons['exon_number'].values[-1]:
-					gtf_aux = gtf_all.loc[gtf_all['gene_id'] == ucsc_id]
+				if gtf_aux['exon_number'].values[-1] == exons['exon_number'].values[-1]: #mirar porque igual no tiene sentido
 					row_utr = gtf_aux.loc[(gtf_aux['feature'] == 'exon') & (gtf_aux['start'] == (exons['start'].values[-1]))]
 					row_utr['start'] = (exons['end'].values[-1]) + 1
 					row_utr['exon_number'] = row_utr['exon_number'].astype(int)
 					row_utr['exon_number'] = row_utr['exon_number'] + 1
 					exons = pd.concat([exons, row_utr], ignore_index = True, axis = 0)
 				else:
-					gtf_aux = gtf_all.loc[gtf_all['gene_id'] == ucsc_id]
-					gtf_aux['exon_number'] = gtf_aux['exon_number'].astype(int)
 					row_utr = gtf_aux.loc[(gtf_aux['feature'] == 'exon') & (gtf_aux['exon_number'] > (exons['exon_number'].values[-1]))]
 					exons = pd.concat([exons, row_utr], ignore_index = True, axis = 0)
 			else:
-				if gtf_all['exon_number'].values[0] == exons['exon_number'].values[0]:
-					gtf_aux = gtf_all.loc[gtf_all['gene_id'] == ucsc_id]
+				if gtf_aux['exon_number'].values[0] == exons['exon_number'].values[0]:
 					row_utr = gtf_aux.loc[(gtf_aux['feature'] == 'exon') & (gtf_aux['end'] == (exons['end'].values[0]))]
 					row_utr['end'] = (exons['start'].values[0]) - 1
 					row_utr['exon_number'] = row_utr['exon_number'].astype(int)
 					row_utr['exon_number'] = row_utr['exon_number'] - 1
 					exons = pd.concat([row_utr, exons], ignore_index = True, axis = 0)
 				else:
-					gtf_aux = gtf_all.loc[gtf_all['gene_id'] == ucsc_id]
-					gtf_aux['exon_number'] = gtf_aux['exon_number'].astype(int)
 					row_utr = gtf_aux.loc[(gtf_aux['feature'] == 'exon') & (gtf_aux['exon_number'] < (exons['exon_number'].values[0]))]
 					exons = pd.concat([row_utr, exons], ignore_index = True, axis = 0)
 			#if strand == '-': #probar quitandolo para ver si funciona
@@ -138,105 +135,248 @@ def getPTCpositionFromFS(gtf, ID, VCF_init, refgen, consequence, ID_specific):
 			command = ' '.join(['samtools faidx', refgen, '--region-file', filein, '>', fileout])
 			subprocess.run(command, shell=True)
 			exonsSeqsdict = {rec.id : str(rec.seq) for rec in SeqIO.parse(fileout, "fasta")}
-
-			# Get a vcf containing only the variant of interest
-			filein = ID_aux + '.mutation.txt'
-			f = open(filein, 'w')
-			f.write('\t'.join(ID))
-			f.close()
-			fileout = ID_aux + '.mut.vcf'
-			command = ' '.join(['zgrep  ^#', VCF_init, '>', fileout, '; zgrep ', ID_specific, VCF_init, '>>', fileout, '; bgzip -c', fileout, '>', fileout +'.gz','; tabix -p vcf', fileout +'.gz'])
-			subprocess.run(command, shell=True)
-			fileout = ID_aux + '.mut.vcf.gz'
-
-			# Get mutated sequence from the specific exon
-			filein = ID_aux + '.mutExon.csv'
-			(mutExon['seqname'] + ':' + mutExon['start'].astype(str) + '-' + mutExon['end'].astype(str)).to_csv(filein,sep='\t',index = None, header = None)
-			filein2 = fileout
-			fileout = ID_aux + '.outmutExon.fa'
-			command = ' '.join(['samtools faidx', refgen, '--region-file', filein, '| bcftools consensus', filein2, '-o', fileout]) #-s TUMOR
-			subprocess.run(command, shell=True)
-			mutExonsSeqsdict = {rec.id : str(rec.seq) for rec in SeqIO.parse(fileout, "fasta")}
-			exonsSeqsdict.update(mutExonsSeqsdict)
 			exons['sequence'] = exons['ID'].map(exonsSeqsdict)
-			exons['exon_number'] = exons['exon_number'].astype(int)
-			# offset_fs = (len(ALT.replace('-', '')) - len(REF.replace('-', ''))) % 3
-			# offset_utr = len(exouc002lyj.2ns['sequence'].loc[exons['feature'] == 'exon']) % 3
-			# offset = offset_fs + offset_utr
-			exons = exons.sort_values('exon_number', ascending=True)
-
-
-			if strand == '+':
-				exons['ExonLen'] = exons['sequence'].apply(lambda x: len(str(x))) #Sacar lenght usando la sequence porque si usas exon start - end vas perdiendo 1 en cada exón
-				exons['translen'] = exons['ExonLen'].cumsum()
-				exons['translenplusone'] = exons['translen'] + 1
-				exons['startTranscript'] = exons['translenplusone'].shift(periods=1)
-				exons['startTranscript']  = exons['startTranscript'].fillna(0).astype(int)
-				startCDS = exons['start'].values[0]
-				offset = len(''.join(list(exons['sequence']))) % 3
-				sequence = Seq(''.join(list(exons['sequence']))[:-offset])
-				#mutcodon = int((np.floor((POS - (startCDS)) /3)) + 1)
-				#mutcodonposition = (POS - startCDS) % 3
-
-				sequence_PTC = str(sequence.translate(to_stop=True))
-
-				PTCposinTrans = len(sequence_PTC)*3
-				if PTCposinTrans >= exons['translen'].max():
-					return 'out'
-				else:
-					if 'Del' in consequence:
-						#PTCposinTransCorrection = PTCposinTrans + (len(REF)-1)
-						exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
-						if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
-							return 'utr'
-						else:
-							Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
-							PTCposition = exons_aux['start'].values[0] + Distance_to_start_exon + (len(REF)-1)
-							return PTCposition
+			wild_exons = exons
+			wild_exons['range'] = wild_exons.apply(lambda x: list(range(x['start'], (x['end'] + 1))), axis = 1)
+			wild_exons['range'] = [','.join(map(str, l)) for l in wild_exons['range']]
+			wild_sequence = ''.join(list(wild_exons['sequence']))
+			wild_numbers = ','.join(list(wild_exons['range']))
+			strand = wild_exons['strand'].values[0]
+			base = list(wild_sequence)
+			coordinate = wild_numbers.split(',')
+			wild_df = pd.DataFrame({'base': base, 'coordinate': coordinate})
+			if 'Del' in consequence:
+				base_mut = list(REF[1:])
+				index = wild_df.index
+				condition = wild_df['coordinate'] == str(POS)
+				wild_df_indices = index[condition]
+				wild_df_indices = wild_df_indices.tolist()
+				dele = list(range((wild_df_indices[0] + 1), (wild_df_indices[0] + len(base_mut) + 1)))
+				mut_df = wild_df.drop(dele)
+				offset = len(''.join(list(mut_df['base']))) % 3
+				if strand == '+':
+					if offset == 0:
+						sequence = Seq(''.join(list(mut_df['base'])))
 					else:
-						#PTCposinTransCorrection = PTCposinTrans - (len(ALT)-1)
-						exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
-						if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
+						sequence = Seq(''.join(list(mut_df['base']))[:-offset])
+					sequence_PTC = str(sequence.translate(to_stop=True))
+					PTCposinTrans = (len(sequence_PTC)*3)
+					if PTCposinTrans >= (len(sequence) - offset):
+						return 'out'
+					else:
+						PTCposition = mut_df['coordinate'].iloc[PTCposinTrans]
+						PTCposition = int(PTCposition)
+						check = wild_exons.loc[(wild_exons['start'] <= PTCposition) & (wild_exons['end'] >= PTCposition)]
+						if check['feature'].values[0] == 'exon':
 							return 'utr'
 						else:
-							Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
-							PTCposition = exons_aux['start'].values[0] + Distance_to_start_exon - (len(ALT)-1)
 							return PTCposition
-
+				else:
+					if offset == 0:
+						sequence = Seq(''.join(list(mut_df['base']))).reverse_complement()
+					else:
+						sequence = Seq(''.join(list(mut_df['base']))[offset:]).reverse_complement()
+					sequence_PTC = str(sequence.translate(to_stop=True))
+					PTCposinTrans = (len(sequence_PTC)*3) + 1
+					if PTCposinTrans >= (len(sequence) - offset):
+						return 'out'
+					else:
+						last = mut_df.tail(1).index.item()
+						PTCposinTrans2 = (last + 1) -  PTCposinTrans
+						PTCposition = mut_df['coordinate'].iloc[PTCposinTrans2 - (len(REF)-1)]
+						PTCposition = int(PTCposition)
+						check = wild_exons.loc[(wild_exons['start'] <= PTCposition) & (wild_exons['end'] >= PTCposition)]
+						if check['feature'].values[0] == 'exon':
+							return 'utr'
+						else:
+							return PTCposition
 			else:
-				exons['ExonLen'] =  exons['sequence'].apply(lambda x: len(str(x)))
-				exons['translen'] = exons.loc[::-1, 'ExonLen'].cumsum()[::-1]
-				exons['translenplusone'] = exons['translen'] + 1
-				exons['startTranscript'] = exons['translenplusone'].shift(periods=-1)
-				exons['startTranscript']  = exons['startTranscript'].fillna(0).astype(int)
-				startCDS = exons.sort_values('exon_number', ascending=False)['end'].values[0]
-				offset = len(''.join(list(exons['sequence']))) % 3
-				sequence = Seq(''.join(list(exons.sort_values('exon_number', ascending=True)['sequence']))[offset:]).reverse_complement()
-				#mutcodon = int((np.floor((startCDS - POS) / 3)) + 1)
-				#mutcodonposition = ((startCDS) - POS) % 3
-				sequence_PTC = str(sequence.translate(to_stop=True))
-				PTCposinTrans = len(sequence_PTC)*3
-				if PTCposinTrans >= exons['translen'].max():
-					return 'out'
-				else:
-					if 'Del' in consequence:
-						#PTCposinTransCorrection = PTCposinTrans + (len(REF)-1)
-						exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
-						if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
-							return 'utr'
-						else:
-							Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
-							PTCposition = exons_aux['end'].values[0] - Distance_to_start_exon + (len(REF)-1)
-							return PTCposition
+				base_mut = list(ALT[1:])
+				coordinate_mut = ['x'] * len(base_mut)
+				variant_df = pd.DataFrame({'base': base_mut, 'coordinate': coordinate_mut})
+				index = wild_df.index
+				condition = wild_df['coordinate'] == str(POS)
+				wild_df_indices = index[condition]
+				wild_df_indices = wild_df_indices.tolist()
+				wild_df1 = wild_df.iloc[:(wild_df_indices[0] + 1)]
+				wild_df2 = wild_df.iloc[(wild_df_indices[0] + 1):]
+				mut_df = pd.concat([wild_df1, variant_df, wild_df2], ignore_index = True, axis = 0)
+				offset = len(''.join(list(mut_df['base']))) % 3
+				if strand == '+':
+					if offset == 0:
+						sequence = Seq(''.join(list(mut_df['base'])))
 					else:
-						#PTCposinTransCorrection = PTCposinTrans - (len(ALT)-1)
-						exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
-						if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
-							return 'utr'
-						else:
-							Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
-							PTCposition = exons_aux['end'].values[0] - Distance_to_start_exon - (len(ALT)-1)
+						sequence = Seq(''.join(list(mut_df['base']))[:-offset])
+					sequence_PTC = str(sequence.translate(to_stop=True))
+					PTCposinTrans = (len(sequence_PTC)*3)
+					if PTCposinTrans >= (len(sequence) - offset):
+						return 'out'
+					else:
+						PTCposition = mut_df['coordinate'].iloc[PTCposinTrans]
+						if PTCposition == 'x':
+							PTCposition = wild_df1['coordinate'].values[-1]
 							return PTCposition
+						else:
+							PTCposition = int(PTCposition)
+							check = wild_exons.loc[(wild_exons['start'] <= PTCposition) & (wild_exons['end'] >= PTCposition)]
+							if check['feature'].values[0] == 'exon':
+								return 'utr'
+							else:
+								return PTCposition
+				else:
+					if offset == 0:
+						sequence = Seq(''.join(list(mut_df['base']))).reverse_complement()
+					else:
+						sequence = Seq(''.join(list(mut_df['base']))[offset:]).reverse_complement()
+					sequence_PTC = str(sequence.translate(to_stop=True))
+					PTCposinTrans = (len(sequence_PTC)*3) + 1
+					if PTCposinTrans >= (len(sequence) - offset):
+						return 'out'
+					else:
+						last = mut_df.tail(1).index.item()
+						PTCposinTrans2 = (last + 1) -  PTCposinTrans
+						PTCposition = mut_df['coordinate'].iloc[PTCposinTrans2]
+						if PTCposition == 'x':
+							PTCposition = wild_df2['coordinate'].values[0]
+							return PTCposition
+						else:
+							PTCposition = int(PTCposition)
+							check = wild_exons.loc[(wild_exons['start'] <= PTCposition) & (wild_exons['end'] >= PTCposition)]
+							if check['feature'].values[0] == 'exon':
+								return 'utr'
+							else:
+								return PTCposition
+
+
+
+			# # Get a vcf containing only the variant of interest
+			# filein = ID_aux + '.mutation.txt'
+			# f = open(filein, 'w')
+			# f.write('\t'.join(ID))
+			# f.close()
+			# fileout = ID_aux + '.mut.vcf'
+			# command = ' '.join(['zgrep  ^#', VCF_init, '>', fileout, '; zgrep ', ID_specific, VCF_init, '>>', fileout, '; bgzip -c', fileout, '>', fileout +'.gz','; tabix -p vcf', fileout +'.gz'])
+			# subprocess.run(command, shell=True)
+			# fileout = ID_aux + '.mut.vcf.gz'
+			#
+			# # Get mutated sequence from the specific exon
+			# filein = ID_aux + '.mutExon.csv'
+			# (mutExon['seqname'] + ':' + mutExon['start'].astype(str) + '-' + mutExon['end'].astype(str)).to_csv(filein,sep='\t',index = None, header = None)
+			# filein2 = fileout
+			# fileout = ID_aux + '.outmutExon.fa'
+			# command = ' '.join(['samtools faidx', refgen, '--region-file', filein, '| bcftools consensus', filein2, '-o', fileout]) #-s TUMOR
+			# subprocess.run(command, shell=True)
+			# mutExonsSeqsdict = {rec.id : str(rec.seq) for rec in SeqIO.parse(fileout, "fasta")}
+			# exonsSeqsdict.update(mutExonsSeqsdict)
+			# exons['sequence'] = exons['ID'].map(exonsSeqsdict)
+			# exons['exon_number'] = exons['exon_number'].astype(int)
+			# # offset_fs = (len(ALT.replace('-', '')) - len(REF.replace('-', ''))) % 3
+			# # offset_utr = len(exouc002lyj.2ns['sequence'].loc[exons['feature'] == 'exon']) % 3
+			# # offset = offset_fs + offset_utr
+			# exons = exons.sort_values('exon_number', ascending=True)
+			#
+			#
+			# if strand == '+':
+			# 	exons['ExonLen'] = exons['sequence'].apply(lambda x: len(str(x))) #Sacar lenght usando la sequence porque si usas exon start - end vas perdiendo 1 en cada exón
+			# 	exons['translen'] = exons['ExonLen'].cumsum()
+			# 	exons['translenplusone'] = exons['translen'] + 1
+			# 	exons['startTranscript'] = exons['translenplusone'].shift(periods=1)
+			# 	exons['startTranscript']  = exons['startTranscript'].fillna(1).astype(int)
+			# 	startCDS = exons['start'].values[0]
+			# 	offset = len(''.join(list(exons['sequence']))) % 3
+			# 	if offset == 0:
+			# 		sequence = Seq(''.join(list(exons['sequence'])))
+			# 	else:
+			# 		sequence = Seq(''.join(list(exons['sequence']))[:-offset])
+			# 	#mutcodon = int((np.floor((POS - (startCDS)) /3)) + 1)
+			# 	#mutcodonposition = (POS - startCDS) % 3
+			#
+			# 	sequence_PTC = str(sequence.translate(to_stop=True)) #Para antes del PTC
+			#
+			# 	PTCposinTrans = (len(sequence_PTC)*3) + 1 # +1 porque no se cuenta al PTC, para antes, y por tanto es una posición más en el tránscrito
+			# 	if PTCposinTrans >= (exons['translen'].max() - offset): #Se resta el offset porque al traducir pierdes las bases del offset y nunca va a ser igual que la sequencia original
+			# 		return 'out'
+			# 	else:
+			# 		if 'Del' in consequence:
+			# 			#PTCposinTransCorrection = PTCposinTrans + (len(REF)-1)
+			# 			exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
+			# 			if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
+			# 				return 'utr'
+			# 			else:
+			# 				Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
+			# 				PTCposition = exons_aux['start'].values[0] + Distance_to_start_exon + (len(REF)-1)
+			# 				# if PTCposition > exons_aux['end'].values[0]:
+			# 				# 	PTCposition = exons_aux['end'].values[0]
+			# 				# elif PTCposition < exons_aux['start'].values[0]:
+			# 				# 	PTCposition = exons_aux['start'].values[0]
+			# 				# else:
+			# 				# 	PTCposition = PTCposition
+			# 				return PTCposition
+			# 		else:
+			# 			#PTCposinTransCorrection = PTCposinTrans - (len(ALT)-1)
+			# 			exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
+			# 			if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
+			# 				return 'utr'
+			# 			else:
+			# 				Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
+			# 				PTCposition = exons_aux['start'].values[0] + Distance_to_start_exon - (len(ALT)-1)
+			# 				# if PTCposition > exons_aux['end'].values[0]:
+			# 				# 	PTCposition = exons_aux['end'].values[0]
+			# 				# elif PTCposition < exons_aux['start'].values[0]:
+			# 				# 	PTCposition = exons_aux['start'].values[0]
+			# 				# else:
+			# 				# 	PTCposition = PTCposition
+			# 				return PTCposition
+			#
+			# else:
+			# 	exons['ExonLen'] =  exons['sequence'].apply(lambda x: len(str(x)))
+			# 	exons['translen'] = exons.loc[::-1, 'ExonLen'].cumsum()[::-1]
+			# 	exons['translenplusone'] = exons['translen'] + 1
+			# 	exons['startTranscript'] = exons['translenplusone'].shift(periods=-1)
+			# 	exons['startTranscript']  = exons['startTranscript'].fillna(1).astype(int)
+			# 	startCDS = exons.sort_values('exon_number', ascending=False)['end'].values[0]
+			# 	offset = len(''.join(list(exons['sequence']))) % 3
+			# 	if offset == 0:
+			# 		sequence = Seq(''.join(list(exons.sort_values('exon_number', ascending=True)['sequence']))).reverse_complement()
+			# 	else:
+			# 		sequence = Seq(''.join(list(exons.sort_values('exon_number', ascending=True)['sequence']))[offset:]).reverse_complement()
+			# 	#mutcodon = int((np.floor((startCDS - POS) / 3)) + 1)
+			# 	#mutcodonposition = ((startCDS) - POS) % 3
+			# 	sequence_PTC = str(sequence.translate(to_stop=True))
+			# 	PTCposinTrans = (len(sequence_PTC)*3) + 1
+			# 	if PTCposinTrans >= (exons['translen'].max() - offset):
+			# 		return 'out'
+			# 	else:
+			# 		if 'Del' in consequence:
+			# 			#PTCposinTransCorrection = PTCposinTrans + (len(REF)-1)
+			# 			exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
+			# 			if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
+			# 				return 'utr'
+			# 			else:
+			# 				Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
+			# 				PTCposition = exons_aux['end'].values[0]- Distance_to_start_exon + (len(REF)-1)
+			# 				# if PTCposition < exons_aux['start'].values[0]:
+			# 				# 	PTCposition = exons_aux['start'].values[0]
+			# 				# elif PTCposition > exons_aux['end'].values[0]:
+			# 				# 	PTCposition = exons_aux['end'].values[0]
+			# 				# else:
+			# 				# 	PTCposition = PTCposition
+			# 				return PTCposition
+			# 		else:
+			# 			#PTCposinTransCorrection = PTCposinTrans - (len(ALT)-1)
+			# 			exons_aux = exons.loc[(exons['startTranscript'] <= PTCposinTrans) & (exons['translenplusone'] > PTCposinTrans)]
+			# 			if exons_aux.loc[exons_aux['feature'] == 'exon'].empty == False:
+			# 				return 'utr'
+			# 			else:
+			# 				Distance_to_start_exon = PTCposinTrans - exons_aux['startTranscript'].values[0]
+			# 				PTCposition = exons_aux['end'].values[0] - Distance_to_start_exon - (len(ALT)-1)
+			# 				# if PTCposition < exons_aux['start'].values[0]:
+			# 				# 	PTCposition = exons_aux['start'].values[0]
+			# 				# elif PTCposition > exons_aux['end'].values[0]:
+			# 				# 	PTCposition = exons_aux['end'].values[0]
+			# 				# else:
+			# 				# 	PTCposition = PTCposition
+			# 				return PTCposition
 		else:
 			return '.'
 
@@ -320,10 +460,11 @@ df.drop('index',1, inplace = True)
 
 
 df['NMDB'] = df.apply(lambda x: nmdxtract(x['ID'], x['PTCposition'], gtf, x['Variant_Classification']), axis=1)
+df['NMDA'] = df.apply(lambda x: nmdxtract(x['ID'], x['PTCposition'], gtfA, x['Variant_Classification']), axis=1)
 
 # df['to_5B'] = to_5
 # df['to_3B'] = to_3
 
 # Save NMD-annotated df (NMD_Braun.csv)
 
-df.to_csv('new_NMDB_NoUCSC_Braun2.0_HD_remix.csv',sep='\t',index = None)
+df.to_csv('new_NMDB_NoUCSC_Braun2.0_HD_remix_5.csv',sep='\t',index = None)
